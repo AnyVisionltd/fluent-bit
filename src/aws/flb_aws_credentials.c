@@ -38,6 +38,14 @@
 
 #define EKS_POD_EXECUTION_ROLE         "EKS_POD_EXECUTION_ROLE"
 
+/* IoT Credentials Environment Variables */
+#define AWS_IOT_KEY_FILE               "AWS_IOT_KEY_FILE"
+#define AWS_IOT_CERT_FILE              "AWS_IOT_CERT_FILE"
+#define AWS_IOT_CA_CERT_FILE           "AWS_IOT_CA_CERT_FILE"
+#define AWS_IOT_CREDENTIALS_ENDPOINT   "AWS_IOT_CREDENTIALS_ENDPOINT"
+#define AWS_IOT_THING_NAME             "AWS_IOT_THING_NAME"
+#define AWS_IOT_ROLE_ALIAS             "AWS_IOT_ROLE_ALIAS"
+
 /* declarations */
 static struct flb_aws_provider *standard_chain_create(struct flb_config
                                                       *config,
@@ -51,6 +59,10 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
                                                       int eks_irsa,
                                                       char *profile);
 
+/* IoT Provider declaration */
+struct flb_aws_provider *flb_iot_provider_create(struct flb_config *config,
+                                                 struct flb_aws_client_generator *generator);
+
 
 /*
  * The standard credential provider chain:
@@ -59,6 +71,7 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
  * 3. EKS OIDC
  * 4. EC2 IMDS
  * 5. ECS HTTP credentials endpoint
+ * 6. IoT credentials endpoint
  *
  * This provider will evaluate each provider in order, returning the result
  * from the first provider that returns valid credentials.
@@ -565,6 +578,14 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
     flb_debug("[aws_credentials] Initialized Env Provider in standard chain");
 
     mk_list_add(&sub_provider->_head, &implementation->sub_providers);
+
+    /* IoT Provider - check early since it requires specific environment variables */
+    sub_provider = flb_iot_provider_create(config, generator);
+    if (sub_provider) {
+        /* IoT provider can fail if we are not running in IoT */
+        mk_list_add(&sub_provider->_head, &implementation->sub_providers);
+        flb_debug("[aws_credentials] Initialized IoT Provider in standard chain");
+    }
 
     flb_debug("[aws_credentials] creating profile %s provider", profile);
     sub_provider = flb_profile_provider_create(profile);

@@ -34,6 +34,14 @@
 /* 5 second timeout for credential related http requests */
 #define FLB_AWS_CREDENTIAL_NET_TIMEOUT 5
 
+/* IoT Credentials Environment Variables */
+#define AWS_IOT_KEY_FILE               "AWS_IOT_KEY_FILE"
+#define AWS_IOT_CERT_FILE              "AWS_IOT_CERT_FILE"
+#define AWS_IOT_CA_CERT_FILE           "AWS_IOT_CA_CERT_FILE"
+#define AWS_IOT_CREDENTIALS_ENDPOINT   "AWS_IOT_CREDENTIALS_ENDPOINT"
+#define AWS_IOT_THING_NAME             "AWS_IOT_THING_NAME"
+#define AWS_IOT_ROLE_ALIAS             "AWS_IOT_ROLE_ALIAS"
+
 /*
  * A structure that wraps the sensitive data needed to sign an AWS request
  */

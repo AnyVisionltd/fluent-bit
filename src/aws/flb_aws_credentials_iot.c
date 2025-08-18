@@ -25,20 +25,14 @@
 #include <fluent-bit/flb_jsmn.h>
 #include <fluent-bit/flb_output_plugin.h>
 #include <fluent-bit/flb_utils.h>
+#include <fluent-bit/flb_log.h>
+#include <fluent-bit/flb_mem.h>
 
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-
-/* IoT Credentials Environment Variables */
-#define AWS_IOT_KEY_FILE               "AWS_IOT_KEY_FILE"
-#define AWS_IOT_CERT_FILE              "AWS_IOT_CERT_FILE"
-#define AWS_IOT_CA_CERT_FILE           "AWS_IOT_CA_CERT_FILE"
-#define AWS_IOT_CREDENTIALS_ENDPOINT   "AWS_IOT_CREDENTIALS_ENDPOINT"
-#define AWS_IOT_THING_NAME             "AWS_IOT_THING_NAME"
-#define AWS_IOT_ROLE_ALIAS             "AWS_IOT_ROLE_ALIAS"
 
 /* IoT Provider */
 struct flb_aws_provider_iot {
@@ -377,22 +371,18 @@ struct flb_aws_provider *flb_iot_provider_create(struct flb_config *config,
     implementation->client->static_headers = &implementation->thing_name_header;
     implementation->client->static_headers_len = 1;
 
-    /* Clean up temporary variables */
-    flb_sds_destroy(protocol);
-    flb_sds_destroy(host);
-    flb_sds_destroy(port_sds);
-    flb_sds_destroy(endpoint_path);
-
-    return provider;
-
-error:
-    flb_aws_provider_destroy(provider);
-    flb_sds_destroy(protocol);
-    flb_sds_destroy(host);
-    flb_sds_destroy(port_sds);
-    flb_sds_destroy(endpoint_path);
-    return NULL;
-}
+    goto cleanup; // At the end of the func
+    error:
+        flb_aws_provider_destroy(provider);
+        provider = NULL;
+        // if no return it just keep executing :)
+    cleanup:
+        flb_sds_destroy(protocol);
+        flb_sds_destroy(host);
+        flb_sds_destroy(port_sds);
+        flb_sds_destroy(endpoint_path);
+        return provider;
+    }
 
 static int iot_credentials_request(struct flb_aws_provider_iot *implementation)
 {
@@ -648,4 +638,4 @@ error:
     flb_aws_credentials_destroy(creds);
     flb_free(tokens);
     return NULL;
-} 
+}

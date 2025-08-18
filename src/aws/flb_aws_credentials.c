@@ -38,14 +38,6 @@
 
 #define EKS_POD_EXECUTION_ROLE         "EKS_POD_EXECUTION_ROLE"
 
-/* IoT Credentials Environment Variables */
-#define AWS_IOT_KEY_FILE               "AWS_IOT_KEY_FILE"
-#define AWS_IOT_CERT_FILE              "AWS_IOT_CERT_FILE"
-#define AWS_IOT_CA_CERT_FILE           "AWS_IOT_CA_CERT_FILE"
-#define AWS_IOT_CREDENTIALS_ENDPOINT   "AWS_IOT_CREDENTIALS_ENDPOINT"
-#define AWS_IOT_THING_NAME             "AWS_IOT_THING_NAME"
-#define AWS_IOT_ROLE_ALIAS             "AWS_IOT_ROLE_ALIAS"
-
 /* declarations */
 static struct flb_aws_provider *standard_chain_create(struct flb_config
                                                       *config,
@@ -58,11 +50,6 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
                                                       *generator,
                                                       int eks_irsa,
                                                       char *profile);
-
-/* IoT Provider declaration */
-struct flb_aws_provider *flb_iot_provider_create(struct flb_config *config,
-                                                 struct flb_aws_client_generator *generator);
-
 
 /*
  * The standard credential provider chain:

@@ -207,7 +207,7 @@ void flb_test_logrotate_gzip_compression(void)
     flb_destroy(ctx);
 
     /* Check that a gzipped rotated file was created */
-    snprintf(rotated_file, sizeof(rotated_file), "%s.%s.gz", TEST_LOGFILE, timestamp);
+    snprintf(rotated_file, sizeof(rotated_file), "%s.%s", TEST_LOGFILE, timestamp);
     ret = check_gzip_file_exists(rotated_file);
     TEST_CHECK(ret == 1);
 
@@ -372,8 +372,9 @@ void flb_test_logrotate_different_formats(void)
     fp = fopen(TEST_LOGFILE, "r");
     TEST_CHECK(fp != NULL);
     if (fp != NULL) {
-        bytes = fread(&output[0], sizeof(output), 1, fp);
+        bytes = fread(&output[0], 1, sizeof(output) - 1, fp);
         TEST_CHECK(bytes > 0);
+        output[bytes] = '\0';
         
         /* Check for CSV header */
         snprintf(expect, sizeof(expect), "timestamp");

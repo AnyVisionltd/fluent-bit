@@ -35,6 +35,7 @@
 #include <dirent.h>
 #include <string.h>
 #include <time.h>
+#include <miniz/miniz.h>
 
 #ifdef FLB_SYSTEM_WINDOWS
 #include <Shlobj.h>
@@ -522,15 +523,153 @@ static void generate_timestamp(char *timestamp, size_t size)
     strftime(timestamp, size, "%Y%m%d_%H%M%S", tm_info);
 }
 
+/* Function to compress a file using gzip */
+static int gzip_compress_file(const char *input_filename, const char *output_filename, struct flb_output_instance *ins)
+{
+    FILE *src_fp, *dst_fp;
+    char buffer[4096];
+    size_t bytes_read;
+    int ret = 0;
+    z_stream strm;
+    int status;
+    uint8_t *out_buf;
+    size_t out_size;
+    mz_ulong crc = MZ_CRC32_INIT;
+    size_t total_uncompressed = 0;
+    int header_written = 0;
+
+    src_fp = fopen(input_filename, "rb");
+    if (!src_fp) {
+        flb_plg_error(ins, "failed to open source file for gzip: %s", input_filename);
+        return -1;
+    }
+
+    dst_fp = fopen(output_filename, "wb");
+    if (!dst_fp) {
+        fclose(src_fp);
+        flb_plg_error(ins, "failed to create gzip file: %s", output_filename);
+        return -1;
+    }
+
+    /* Initialize zlib stream for raw deflate compression */
+    memset(&strm, 0, sizeof(strm));
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    
+    /* Initialize deflate with raw format (no header/footer) */
+    status = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                         -Z_DEFAULT_WINDOW_BITS, 9, Z_DEFAULT_STRATEGY);
+    if (status != Z_OK) {
+        flb_plg_error(ins, "failed to initialize gzip compression");
+        fclose(src_fp);
+        fclose(dst_fp);
+        return -1;
+    }
+
+    /* Allocate output buffer */
+    out_size = compressBound(sizeof(buffer));
+    out_buf = flb_malloc(out_size);
+    if (!out_buf) {
+        flb_plg_error(ins, "failed to allocate compression buffer");
+        deflateEnd(&strm);
+        fclose(src_fp);
+        fclose(dst_fp);
+        return -1;
+    }
+
+    /* Read source file and compress in a single stream */
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), src_fp)) > 0) {
+        /* Write gzip header only once at the beginning */
+        if (!header_written) {
+            /* Write gzip header */
+            uint8_t header[10] = {
+                0x1f, 0x8b,  /* Magic bytes */
+                0x08,         /* Compression method (deflate) */
+                0x00,         /* Flags */
+                0x00, 0x00, 0x00, 0x00,  /* Timestamp */
+                0x00,         /* Compression flags */
+                0x03          /* OS (Unix) */
+            };
+            if (fwrite(header, 1, sizeof(header), dst_fp) != sizeof(header)) {
+                flb_plg_error(ins, "failed to write gzip header");
+                ret = -1;
+                goto cleanup;
+            }
+            header_written = 1;
+        }
+
+        /* Update CRC for this chunk */
+        crc = mz_crc32(crc, (const unsigned char *)buffer, bytes_read);
+        total_uncompressed += bytes_read;
+
+        strm.next_in = (Bytef *)buffer;
+        strm.avail_in = bytes_read;
+        
+        do {
+            strm.next_out = out_buf;
+            strm.avail_out = out_size;
+            
+            /* Use Z_NO_FLUSH for all chunks except the last one */
+            int flush = (feof(src_fp) ? Z_FINISH : Z_NO_FLUSH);
+            status = deflate(&strm, flush);
+            
+            if (status == Z_STREAM_ERROR) {
+                flb_plg_error(ins, "gzip compression failed");
+                ret = -1;
+                goto cleanup;
+            }
+            
+            /* Write compressed data */
+            size_t compressed_size = out_size - strm.avail_out;
+            if (compressed_size > 0) {
+                if (fwrite(out_buf, 1, compressed_size, dst_fp) != compressed_size) {
+                    flb_plg_error(ins, "failed to write compressed data");
+                    ret = -1;
+                    goto cleanup;
+                }
+            }
+        } while (strm.avail_out == 0);
+    }
+
+    /* Check if compression completed successfully */
+    if (status != Z_STREAM_END) {
+        flb_plg_error(ins, "gzip compression did not complete properly");
+        ret = -1;
+        goto cleanup;
+    }
+
+    /* Write gzip footer (CRC32 + original size) */
+    uint8_t footer[8];
+    footer[0] = crc & 0xFF;
+    footer[1] = (crc >> 8) & 0xFF;
+    footer[2] = (crc >> 16) & 0xFF;
+    footer[3] = (crc >> 24) & 0xFF;
+    footer[4] = total_uncompressed & 0xFF;
+    footer[5] = (total_uncompressed >> 8) & 0xFF;
+    footer[6] = (total_uncompressed >> 16) & 0xFF;
+    footer[7] = (total_uncompressed >> 24) & 0xFF;
+    
+    if (fwrite(footer, 1, sizeof(footer), dst_fp) != sizeof(footer)) {
+        flb_plg_error(ins, "failed to write gzip footer");
+        ret = -1;
+    }
+
+cleanup:
+    flb_free(out_buf);
+    deflateEnd(&strm);
+    fclose(src_fp);
+    fclose(dst_fp);
+
+    return ret;
+}
+
 /* Function to rotate file */
 static int rotate_file(struct flb_logrotate_conf *ctx, const char *filename)
 {
     char timestamp[32];
     char rotated_filename[PATH_MAX];
     char gzip_filename[PATH_MAX];
-    FILE *src_fp, *dst_fp;
-    char buffer[4096];
-    size_t bytes_read;
     int ret = 0;
 
     /* Generate timestamp */
@@ -550,38 +689,7 @@ static int rotate_file(struct flb_logrotate_conf *ctx, const char *filename)
     if (ctx->gzip == FLB_TRUE) {
         snprintf(gzip_filename, PATH_MAX - 1, "%s.gz", rotated_filename);
         
-        src_fp = fopen(rotated_filename, "rb");
-        if (!src_fp) {
-            flb_plg_error(ctx->ins, "failed to open source file for gzip: %s", rotated_filename);
-            return -1;
-        }
-
-        dst_fp = fopen(gzip_filename, "wb");
-        if (!dst_fp) {
-            fclose(src_fp);
-            flb_plg_error(ctx->ins, "failed to create gzip file: %s", gzip_filename);
-            return -1;
-        }
-
-        /* Read source file and compress */
-        while ((bytes_read = fread(buffer, 1, sizeof(buffer), src_fp)) > 0) {
-            void *compressed_data;
-            size_t compressed_size;
-            
-            ret = flb_gzip_compress(buffer, bytes_read, &compressed_data, &compressed_size);
-            if (ret == 0) {
-                fwrite(compressed_data, 1, compressed_size, dst_fp);
-                flb_free(compressed_data);
-            } else {
-                flb_plg_error(ctx->ins, "gzip compression failed");
-                ret = -1;
-                break;
-            }
-        }
-
-        fclose(src_fp);
-        fclose(dst_fp);
-
+        ret = gzip_compress_file(rotated_filename, gzip_filename, ctx->ins);
         if (ret == 0) {
             /* Remove the uncompressed file */
             unlink(rotated_filename);

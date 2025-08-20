@@ -371,18 +371,17 @@ struct flb_aws_provider *flb_iot_provider_create(struct flb_config *config,
     implementation->client->static_headers = &implementation->thing_name_header;
     implementation->client->static_headers_len = 1;
 
-    goto cleanup; // At the end of the func
-    error:
-        flb_aws_provider_destroy(provider);
-        provider = NULL;
-        // if no return it just keep executing :)
     cleanup:
         flb_sds_destroy(protocol);
         flb_sds_destroy(host);
         flb_sds_destroy(port_sds);
         flb_sds_destroy(endpoint_path);
         return provider;
-    }
+    error:
+        flb_aws_provider_destroy(provider);
+        provider = NULL;
+        goto cleanup;
+}
 
 static int iot_credentials_request(struct flb_aws_provider_iot *implementation)
 {
@@ -549,7 +548,7 @@ static struct flb_aws_credentials *flb_parse_iot_credentials(char *response, siz
                 current_token = &response[t->start];
                 len = t->end - t->start;
                 if (creds->access_key_id != NULL) {
-                    flb_error("Trying to double allocate access_key_id");
+                    flb_error("[aws_credentials] Trying to double allocate access_key_id");
                     goto error;
                 }
                 creds->access_key_id = flb_sds_create_len(current_token, len);
@@ -567,7 +566,7 @@ static struct flb_aws_credentials *flb_parse_iot_credentials(char *response, siz
                 current_token = &response[t->start];
                 len = t->end - t->start;
                 if (creds->secret_access_key != NULL) {
-                    flb_error("Trying to double allocate secret_access_key");
+                    flb_error("[aws_credentials] Trying to double allocate secret_access_key");
                     goto error;
                 }
                 creds->secret_access_key = flb_sds_create_len(current_token, len);
@@ -585,7 +584,7 @@ static struct flb_aws_credentials *flb_parse_iot_credentials(char *response, siz
                 current_token = &response[t->start];
                 len = t->end - t->start;
                 if (creds->session_token != NULL) {
-                    flb_error("Trying to double allocate session_token");
+                    flb_error("[aws_credentials] Trying to double allocate session_token");
                     goto error;
                 }
                 creds->session_token = flb_sds_create_len(current_token, len);

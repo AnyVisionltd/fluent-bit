@@ -290,6 +290,21 @@ struct flb_aws_provider *flb_iot_provider_create(struct flb_config *config,
     implementation->thing_name = flb_strdup(thing_name);
     implementation->role_alias = flb_strdup(role_alias);
 
+    /* Ensure credentials_endpoint has http or https scheme, default to https:// if missing */
+    if (strncmp(credentials_endpoint, "http://", 7) != 0 &&
+        strncmp(credentials_endpoint, "https://", 8) != 0) {
+        flb_sds_t tmp = flb_sds_create_size(strlen(credentials_endpoint) + 8 + 1);
+        if (!tmp) {
+            flb_error("[aws_credentials] Failed to allocate memory for credentials_endpoint");
+            goto error;
+        }
+        flb_sds_cat(tmp, "https://", 8);
+        flb_sds_cat(tmp, credentials_endpoint, strlen(credentials_endpoint));
+        flb_free(implementation->credentials_endpoint);
+        implementation->credentials_endpoint = tmp;
+        credentials_endpoint = implementation->credentials_endpoint;
+    }
+
     /* Parse the credentials endpoint URL */
     ret = flb_utils_url_split_sds(credentials_endpoint, &protocol, &host, &port_sds, &endpoint_path);
     if (ret < 0) {

@@ -57,6 +57,11 @@
 #define FLB_PATH_SEPARATOR "/"
 #endif
 
+/* Constants for streaming gzip compression */
+#define GZIP_CHUNK_SIZE (64 * 1024)  /* 64KB chunks for memory efficiency */
+#define GZIP_HEADER_SIZE 10
+#define GZIP_FOOTER_SIZE 8
+
 struct flb_logrotate_conf {
     const char *out_path;
     const char *out_file;
@@ -503,7 +508,7 @@ static int mkpath(struct flb_output_instance *ins, const char *dir)
 /* Function to check if file size exceeds max size in MB */
 static int should_rotate_file(struct flb_logrotate_conf *ctx)
 {
-    return (ctx->current_file_size) >= ctx->max_size;
+    return ctx->current_file_size >= ctx->max_size;
 }
 
 /* Function to update file size counter using current file position */
@@ -523,141 +528,156 @@ static void generate_timestamp(char *timestamp, size_t size)
     strftime(timestamp, size, "%Y%m%d_%H%M%S", tm_info);
 }
 
-/* Function to compress a file using gzip */
+/* Helper function to write gzip header (based on flb_gzip.c) */
+static void write_gzip_header(FILE *fp)
+{
+    uint8_t header[GZIP_HEADER_SIZE] = {
+        0x1F, 0x8B,  /* Magic bytes */
+        0x08,         /* Compression method (deflate) */
+        0x00,         /* Flags */
+        0x00, 0x00, 0x00, 0x00,  /* Timestamp */
+        0x00,         /* Compression flags */
+        0xFF          /* OS (unknown) */
+    };
+    fwrite(header, 1, GZIP_HEADER_SIZE, fp);
+}
+
+/* Helper function to write gzip footer */
+static void write_gzip_footer(FILE *fp, mz_ulong crc, size_t original_size)
+{
+    uint8_t footer[GZIP_FOOTER_SIZE];
+    
+    /* Write CRC32 */
+    footer[0] = crc & 0xFF;
+    footer[1] = (crc >> 8) & 0xFF;
+    footer[2] = (crc >> 16) & 0xFF;
+    footer[3] = (crc >> 24) & 0xFF;
+    
+    /* Write original size */
+    footer[4] = original_size & 0xFF;
+    footer[5] = (original_size >> 8) & 0xFF;
+    footer[6] = (original_size >> 16) & 0xFF;
+    footer[7] = (original_size >> 24) & 0xFF;
+    
+    fwrite(footer, 1, GZIP_FOOTER_SIZE, fp);
+}
+
+/* Function to compress a file using streaming gzip (memory-safe for large files) */
 static int gzip_compress_file(const char *input_filename, const char *output_filename, struct flb_output_instance *ins)
 {
     FILE *src_fp, *dst_fp;
-    char buffer[4096];
-    size_t bytes_read;
-    int ret = 0;
-    z_stream strm;
-    int status;
-    uint8_t *out_buf;
-    size_t out_size;
+    char *input_buffer, *output_buffer;
+    size_t bytes_read, output_buffer_size;
+    size_t total_input_size = 0;
     mz_ulong crc = MZ_CRC32_INIT;
-    size_t total_uncompressed = 0;
-    int header_written = 0;
+    z_stream strm;
+    int ret = 0, flush, status;
 
+    /* Open source file */
     src_fp = fopen(input_filename, "rb");
     if (!src_fp) {
         flb_plg_error(ins, "failed to open source file for gzip: %s", input_filename);
         return -1;
     }
 
+    /* Open destination file */
     dst_fp = fopen(output_filename, "wb");
     if (!dst_fp) {
-        fclose(src_fp);
         flb_plg_error(ins, "failed to create gzip file: %s", output_filename);
+        fclose(src_fp);
         return -1;
     }
 
-    /* Initialize zlib stream for raw deflate compression */
-    memset(&strm, 0, sizeof(strm));
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
+    /* Allocate input and output buffers */
+    input_buffer = flb_malloc(GZIP_CHUNK_SIZE);
+    output_buffer_size = compressBound(GZIP_CHUNK_SIZE);
+    output_buffer = flb_malloc(output_buffer_size);
     
-    /* Initialize deflate with raw format (no header/footer) */
-    status = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                         -Z_DEFAULT_WINDOW_BITS, 9, Z_DEFAULT_STRATEGY);
-    if (status != Z_OK) {
-        flb_plg_error(ins, "failed to initialize gzip compression");
-        fclose(src_fp);
-        fclose(dst_fp);
-        return -1;
-    }
-
-    /* Allocate output buffer */
-    out_size = compressBound(sizeof(buffer));
-    out_buf = flb_malloc(out_size);
-    if (!out_buf) {
-        flb_plg_error(ins, "failed to allocate compression buffer");
-        deflateEnd(&strm);
-        fclose(src_fp);
-        fclose(dst_fp);
-        return -1;
-    }
-
-    /* Read source file and compress in a single stream */
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), src_fp)) > 0) {
-        /* Write gzip header only once at the beginning */
-        if (!header_written) {
-            /* Write gzip header */
-            uint8_t header[10] = {
-                0x1f, 0x8b,  /* Magic bytes */
-                0x08,         /* Compression method (deflate) */
-                0x00,         /* Flags */
-                0x00, 0x00, 0x00, 0x00,  /* Timestamp */
-                0x00,         /* Compression flags */
-                0x03          /* OS (Unix) */
-            };
-            if (fwrite(header, 1, sizeof(header), dst_fp) != sizeof(header)) {
-                flb_plg_error(ins, "failed to write gzip header");
-                ret = -1;
-                goto cleanup;
-            }
-            header_written = 1;
-        }
-
-        /* Update CRC for this chunk */
-        crc = mz_crc32(crc, (const unsigned char *)buffer, bytes_read);
-        total_uncompressed += bytes_read;
-
-        strm.next_in = (Bytef *)buffer;
-        strm.avail_in = bytes_read;
-        
-        do {
-            strm.next_out = out_buf;
-            strm.avail_out = out_size;
-            
-            /* Use Z_NO_FLUSH for all chunks except the last one */
-            int flush = (feof(src_fp) ? Z_FINISH : Z_NO_FLUSH);
-            status = deflate(&strm, flush);
-            
-            if (status == Z_STREAM_ERROR) {
-                flb_plg_error(ins, "gzip compression failed");
-                ret = -1;
-                goto cleanup;
-            }
-            
-            /* Write compressed data */
-            size_t compressed_size = out_size - strm.avail_out;
-            if (compressed_size > 0) {
-                if (fwrite(out_buf, 1, compressed_size, dst_fp) != compressed_size) {
-                    flb_plg_error(ins, "failed to write compressed data");
-                    ret = -1;
-                    goto cleanup;
-                }
-            }
-        } while (strm.avail_out == 0);
-    }
-
-    /* Check if compression completed successfully */
-    if (status != Z_STREAM_END) {
-        flb_plg_error(ins, "gzip compression did not complete properly");
+    if (!input_buffer || !output_buffer) {
+        flb_plg_error(ins, "failed to allocate compression buffers");
         ret = -1;
         goto cleanup;
     }
 
-    /* Write gzip footer (CRC32 + original size) */
-    uint8_t footer[8];
-    footer[0] = crc & 0xFF;
-    footer[1] = (crc >> 8) & 0xFF;
-    footer[2] = (crc >> 16) & 0xFF;
-    footer[3] = (crc >> 24) & 0xFF;
-    footer[4] = total_uncompressed & 0xFF;
-    footer[5] = (total_uncompressed >> 8) & 0xFF;
-    footer[6] = (total_uncompressed >> 16) & 0xFF;
-    footer[7] = (total_uncompressed >> 24) & 0xFF;
-    
-    if (fwrite(footer, 1, sizeof(footer), dst_fp) != sizeof(footer)) {
-        flb_plg_error(ins, "failed to write gzip footer");
+    /* Write gzip header */
+    write_gzip_header(dst_fp);
+
+    /* Initialize deflate stream (raw deflate without gzip wrapper) */
+    memset(&strm, 0, sizeof(strm));
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+
+    status = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                         -Z_DEFAULT_WINDOW_BITS, 9, Z_DEFAULT_STRATEGY);
+    if (status != Z_OK) {
+        flb_plg_error(ins, "failed to initialize deflate stream");
         ret = -1;
+        goto cleanup;
     }
 
-cleanup:
-    flb_free(out_buf);
+    /* Process file in chunks */
+    do {
+        bytes_read = fread(input_buffer, 1, GZIP_CHUNK_SIZE, src_fp);
+        if (bytes_read > 0) {
+            /* Update CRC and total size */
+            crc = mz_crc32(crc, (const unsigned char *)input_buffer, bytes_read);
+            total_input_size += bytes_read;
+
+            /* Set up deflate input */
+            strm.next_in = (Bytef *)input_buffer;
+            strm.avail_in = bytes_read;
+            
+            /* Determine flush mode */
+            flush = feof(src_fp) ? Z_FINISH : Z_NO_FLUSH;
+
+            /* Compress chunk */
+            do {
+                strm.next_out = (Bytef *)output_buffer;
+                strm.avail_out = output_buffer_size;
+
+                status = deflate(&strm, flush);
+                if (status == Z_STREAM_ERROR) {
+                    flb_plg_error(ins, "deflate stream error during compression");
+                    ret = -1;
+                    goto deflate_cleanup;
+                }
+
+                /* Write compressed data */
+                size_t compressed_bytes = output_buffer_size - strm.avail_out;
+                if (compressed_bytes > 0) {
+                    if (fwrite(output_buffer, 1, compressed_bytes, dst_fp) != compressed_bytes) {
+                        flb_plg_error(ins, "failed to write compressed data");
+                        ret = -1;
+                        goto deflate_cleanup;
+                    }
+                }
+            } while (strm.avail_out == 0);
+
+            /* Verify all input was consumed */
+            if (strm.avail_in != 0) {
+                flb_plg_error(ins, "deflate did not consume all input data");
+                ret = -1;
+                goto deflate_cleanup;
+            }
+        }
+    } while (bytes_read > 0 && status != Z_STREAM_END);
+
+    /* Verify compression completed successfully */
+    if (status != Z_STREAM_END) {
+        flb_plg_error(ins, "compression did not complete properly");
+        ret = -1;
+    } else {
+        /* Write gzip footer (CRC32 + original size) */
+        write_gzip_footer(dst_fp, crc, total_input_size);
+    }
+
+deflate_cleanup:
     deflateEnd(&strm);
+
+cleanup:
+    if (input_buffer) flb_free(input_buffer);
+    if (output_buffer) flb_free(output_buffer);
     fclose(src_fp);
     fclose(dst_fp);
 

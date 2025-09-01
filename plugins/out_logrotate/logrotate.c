@@ -66,7 +66,7 @@ struct flb_logrotate_conf {
     int format;
     int csv_column_names;
     int mkdir;
-    int max_size;      /* Max file size in MB */
+    int max_size;      /* Max file size */
     int max_files;     /* Maximum number of rotated files to keep */
     int gzip;          /* Whether to gzip rotated files */
     size_t current_file_size; /* Current file size in bytes */
@@ -113,7 +113,7 @@ static int cb_logrotate_init(struct flb_output_instance *ins,
     ctx->delimiter = NULL;
     ctx->label_delimiter = NULL;
     ctx->template = NULL;
-    ctx->max_size = 100;    /* default 100 MB */
+    ctx->max_size = 100000000;  /* default 100 MB */
     ctx->max_files = 7;     /* default 7 files */
     ctx->gzip = FLB_TRUE;   /* default true */
     ctx->current_file_size = 0; /* Initialize file size counter */
@@ -503,7 +503,7 @@ static int mkpath(struct flb_output_instance *ins, const char *dir)
 /* Function to check if file size exceeds max size in MB */
 static int should_rotate_file(struct flb_logrotate_conf *ctx)
 {
-    return (ctx->current_file_size / (1024 * 1024)) >= ctx->max_size;
+    return (ctx->current_file_size) >= ctx->max_size;
 }
 
 /* Function to update file size counter using current file position */
@@ -1077,9 +1077,9 @@ static struct flb_config_map config_map[] = {
     },
 
     {
-     FLB_CONFIG_MAP_INT, "max_size", "100",
+     FLB_CONFIG_MAP_SIZE, "max_size", "100000000",
      0, FLB_TRUE, offsetof(struct flb_logrotate_conf, max_size),
-     "Maximum size of file in MB before rotation (default: 100)"
+     "Maximum size of file before rotation (default: 100M)"
     },
 
     {

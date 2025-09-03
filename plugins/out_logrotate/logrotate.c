@@ -71,7 +71,7 @@ struct flb_logrotate_conf {
     int format;
     int csv_column_names;
     int mkdir;
-    int max_size;      /* Max file size */
+    size_t max_size;      /* Max file size */
     int max_files;     /* Maximum number of rotated files to keep */
     int gzip;          /* Whether to gzip rotated files */
     size_t current_file_size; /* Current file size in bytes */
@@ -118,9 +118,6 @@ static int cb_logrotate_init(struct flb_output_instance *ins,
     ctx->delimiter = NULL;
     ctx->label_delimiter = NULL;
     ctx->template = NULL;
-    ctx->max_size = 100000000;  /* default 100 MB */
-    ctx->max_files = 7;     /* default 7 files */
-    ctx->gzip = FLB_TRUE;   /* default true */
     ctx->current_file_size = 0; /* Initialize file size counter */
 
     ret = flb_output_config_map_set(ins, (void *) ctx);
@@ -179,6 +176,12 @@ static int cb_logrotate_init(struct flb_output_instance *ins,
 
     /* Set the context */
     flb_output_set_context(ins, ctx);
+
+    /* Log resolved configuration values */
+    flb_plg_info(ctx->ins, "logrotate plugin initialized with: max_size=%zu, max_files=%d, gzip=%s, path=%s",
+                  ctx->max_size, ctx->max_files,
+                  ctx->gzip == FLB_TRUE ? "true" : "false",
+                  ctx->out_path ? ctx->out_path : "not set");
 
     return 0;
 }
@@ -692,6 +695,10 @@ static int rotate_file(struct flb_logrotate_conf *ctx, const char *filename)
     char gzip_filename[PATH_MAX];
     int ret = 0;
 
+    /* Log rotation event */
+    flb_plg_info(ctx->ins, "rotating file: %s (current size: %zu bytes)", 
+                  filename, ctx->current_file_size);
+
     /* Generate timestamp */
     generate_timestamp(timestamp, sizeof(timestamp));
 
@@ -793,6 +800,10 @@ static int cleanup_old_files(struct flb_logrotate_conf *ctx, const char *directo
     }
 
     /* Remove oldest files */
+    if (file_count > max_files) {
+        flb_plg_info(ctx->ins, "cleaning up old rotated files: removing %d files (keeping %d)", 
+                      file_count - max_files, max_files);
+    }
     for (i = 0; i < file_count - max_files; i++) {
         if (unlink(files[i]) == 0) {
             flb_plg_debug(ctx->ins, "removed old rotated file: %s", files[i]);

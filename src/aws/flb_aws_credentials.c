@@ -51,7 +51,6 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
                                                       int eks_irsa,
                                                       char *profile);
 
-
 /*
  * The standard credential provider chain:
  * 1. Environment variables
@@ -59,6 +58,7 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
  * 3. EKS OIDC
  * 4. EC2 IMDS
  * 5. ECS HTTP credentials endpoint
+ * 6. IoT credentials endpoint
  *
  * This provider will evaluate each provider in order, returning the result
  * from the first provider that returns valid credentials.
@@ -565,6 +565,14 @@ static struct flb_aws_provider *standard_chain_create(struct flb_config
     flb_debug("[aws_credentials] Initialized Env Provider in standard chain");
 
     mk_list_add(&sub_provider->_head, &implementation->sub_providers);
+
+    /* IoT Provider - check early since it requires specific environment variables */
+    sub_provider = flb_iot_provider_create(config, generator);
+    if (sub_provider) {
+        /* IoT provider can fail if we are not running in IoT */
+        mk_list_add(&sub_provider->_head, &implementation->sub_providers);
+        flb_debug("[aws_credentials] Initialized IoT Provider in standard chain");
+    }
 
     flb_debug("[aws_credentials] creating profile %s provider", profile);
     sub_provider = flb_profile_provider_create(profile);
